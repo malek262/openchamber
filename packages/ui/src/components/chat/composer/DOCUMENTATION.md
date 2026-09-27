@@ -247,6 +247,15 @@ composer holds a prompt, not a source file: it is short enough that a full pass
 is cheaper and far simpler than incremental mapping, and it keeps the editor
 and the send path reading the same grammar.
 
+`editor/autoLineDirection.ts` gives each line `dir="auto"` and enables
+CodeMirror's `perLineTextDirection`, so an Arabic-leading line runs
+right-to-left with a correct caret while code- and English-leading lines stay
+left-to-right. The direction comes from each line's first strong character
+(specified behavior), and the decorations rebuild over visible lines only. Do
+not replace it with CSS `unicode-bidi: plaintext` on `.cm-line`: that leaves
+the computed `direction` at `ltr`, which desyncs CodeMirror's own caret and
+selection measurements.
+
 ## Ordering rules worth knowing
 
 - `editor/ComposerEditor.tsx` forwards a click on the composer's padding by
