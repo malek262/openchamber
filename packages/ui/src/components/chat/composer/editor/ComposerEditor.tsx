@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils';
 import type { ComposerLanguageContext } from '../language/tokenize';
 import type { ComposerAutoCorrect } from './autocorrect';
 import { composerLanguage, setLanguageContext } from './composerLanguage';
+import { autoLineDirection } from './autoLineDirection';
 import { replaceWithCaret } from './documentEdits';
 import type { ComposerEditorViewStore } from './viewStore';
 import { composerEditorTheme, composerSelectionExtension } from './theme';
@@ -261,6 +262,9 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                         drawSelection(),
                         composerSelectionExtension(),
                         EditorView.lineWrapping,
+                        // Per-line bidi: Arabic-leading lines run RTL with a
+                        // correct caret, code- and English-leading stay LTR.
+                        autoLineDirection,
                         // Highest precedence: the composer's own keys must win
                         // over CodeMirror's defaults (Enter sends, ArrowUp
                         // walks history, Escape closes a picker).

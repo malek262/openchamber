@@ -1264,8 +1264,9 @@ html:not(.dark) .chat-scroll {
 
 /* Markdown blockquote - use theme colors */
 .markdown-content blockquote {
-  border-left: 2px solid var(--markdown-blockquote-border, var(--border));
-  padding-left: 0.8rem;
+  /* Logical edge: the accent bar follows the quote's own text direction. */
+  border-inline-start: 2px solid var(--markdown-blockquote-border, var(--border));
+  padding-inline-start: 0.8rem;
   color: var(--markdown-blockquote, var(--muted-foreground));
 }
 

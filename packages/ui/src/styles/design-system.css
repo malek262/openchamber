@@ -196,12 +196,62 @@
     outline-offset: 2px;
   }
 
+  /* Bidirectional text (openchamber#1753): `dir="auto"` is injected per block
+     at render time (markdownCore), resolving a real computed direction from
+     the block's first strong character. `unicode-bidi: plaintext` is the
+     per-paragraph fallback for any block the attribute misses, and
+     `text-align: start` keeps alignment tied to the resolved direction.
+     First-strong is specified behavior: a block opening with Latin text
+     (`React هي مكتبة…`) stays LTR even when mostly Arabic. */
+  .markdown-content p,
+  .markdown-content li,
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3,
+  .markdown-content h4,
+  .markdown-content h5,
+  .markdown-content h6,
+  .markdown-content td,
+  .markdown-content th,
+  .markdown-content blockquote {
+    unicode-bidi: plaintext;
+    text-align: start;
+  }
+
+  /* Code blocks always stay left-to-right: an RTL opening comment must not
+     flip the whole snippet. */
+  .markdown-content pre {
+    direction: ltr;
+    text-align: left;
+  }
+
+  /* Directional container chrome. `dir="auto"` on a container skips
+     descendants carrying their own `dir`, so a quote or a loose list item
+     whose text sits in a nested block never resolves RTL by itself. `:dir()`
+     still reads that nested direction, moving the quote bar, the list gutter
+     and the item's marker to the content's own side. Unsupported engines
+     ignore the rule and degrade to LTR chrome with correct text direction. */
+  .markdown-content blockquote:has(> :first-child:dir(rtl)),
+  .markdown-content ul:has(> li:first-child:dir(rtl)),
+  .markdown-content ol:has(> li:first-child:dir(rtl)),
+  .markdown-content li:has(> :first-child:dir(rtl)) {
+    direction: rtl;
+  }
+
+  /* Plain-text (non-markdown) chat text: newline-separated paragraphs each
+     derive their own base direction. */
+  .oc-bidi-plaintext {
+    unicode-bidi: plaintext;
+    text-align: start;
+  }
+
   /* Restore list styling inside markdown content - override Tailwind preflight.
      Native markers with a compact gutter; nesting cycles the marker shape so
-     depth stays readable without extra indentation. */
+     depth stays readable without extra indentation. The gutter is a logical
+     property so it follows the list's direction in RTL content. */
   .markdown-content ul,
   .markdown-content ol {
-    padding-left: 1.25rem !important;
+    padding-inline-start: 1.25rem !important;
   }
 
   .markdown-content ul {
@@ -251,7 +301,9 @@
   }
 
   .markdown-content li > input[type="checkbox"]:first-child {
-    margin: 0 0.35em 0.15em -1.25rem;
+    /* Logical margins mirror the checkbox to the item's inline-start in RTL. */
+    margin-block: 0 0.15em;
+    margin-inline: -1.25rem 0.35em;
     vertical-align: middle;
   }
 

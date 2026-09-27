@@ -275,7 +275,9 @@ const UserTextPart: React.FC<UserTextPartProps> = ({ part, messageId, agentMenti
                 className={cn(
                     "break-words font-sans typography-markdown-body",
                     !isControlled && isExpanded && "pb-3",
-                    normalizedRenderingMode === 'plain' && 'whitespace-pre-wrap',
+                    // Plain mode holds raw newline-separated text: each line
+                    // derives its own base direction (openchamber#1753).
+                    normalizedRenderingMode === 'plain' && 'whitespace-pre-wrap oc-bidi-plaintext',
                     isCollapsed && "line-clamp-2",
                     collapsibleUserMessages && isTruncated && !effectiveExpanded && "cursor-pointer"
                 )}

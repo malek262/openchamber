@@ -709,6 +709,38 @@ const sanitize = (html: string): string => {
   return DOMPurify.sanitize(html, SANITIZE_CONFIG) as unknown as string;
 };
 
+// ---------------------------------------------------------------------------
+// Bidirectional text (RTL) — per-block base direction
+// ---------------------------------------------------------------------------
+//
+// `dir="auto"` resolves each block's base direction from its first strong
+// directional character (Unicode bidi algorithm), so an Arabic-leading
+// paragraph renders right-to-left while an English-leading one stays
+// left-to-right. Applied at HTML generation time — no MutationObserver and no
+// runtime DOM walking — and because it resolves the element's real computed
+// `direction` (which `unicode-bidi: plaintext` deliberately does not), list
+// markers and `text-align: start` follow it too.
+//
+// First-strong is the HTML/CSS specified behavior: a block that *starts* with
+// Latin text (`React هي مكتبة…`) resolves LTR even when it is mostly Arabic.
+// That is an inference limit, not a rendering bug (openchamber#1753).
+//
+// `<pre>` is excluded on purpose: code keeps an explicit LTR policy (see
+// design-system.css) so a snippet opening with an RTL comment cannot flip the
+// whole block. Inline runs (code spans, links, bare URLs) need nothing — the
+// bidi algorithm orders them within the block's base direction.
+//
+// Only blocks with direct text content are tagged. On containers (`ul`,
+// `blockquote`, …) `dir="auto"` is specified to skip descendants that carry
+// their own `dir`, so a container of tagged children would never resolve RTL
+// — the container chrome (quote bar, list gutter) is handled in
+// design-system.css with `:has(:dir(rtl))` instead.
+const BIDI_AUTO_DIRECTION_TAGS_RE =
+  /<(p|li|h[1-6]|td|th|summary)(?=[\s>])/g;
+
+const applyBidiAutoDirection = (html: string): string =>
+  html.replace(BIDI_AUTO_DIRECTION_TAGS_RE, '<$1 dir="auto"');
+
 
 // ---------------------------------------------------------------------------
 // Per-block HTML cache (content-addressed LRU)
@@ -790,7 +822,10 @@ export const getCachedMarkdownBlocks = (
 };
 
 const renderPlainText = (text: string): string =>
-  `<div class="whitespace-pre-wrap break-words">${escapeRawMarkdownHtml(text)}</div>`;
+  // `oc-bidi-plaintext` (design-system.css) gives each newline-separated
+  // paragraph its own base direction — per-line, unlike dir="auto" which
+  // would pin the whole message to its first strong character.
+  `<div class="oc-bidi-plaintext whitespace-pre-wrap break-words">${escapeRawMarkdownHtml(text)}</div>`;
 
 const parseBlock = async (block: MarkdownBlock, imageMode: MarkdownImageMode): Promise<string> => {
   if (block.plainText) return renderPlainText(block.raw);
@@ -804,7 +839,7 @@ const parseBlock = async (block: MarkdownBlock, imageMode: MarkdownImageMode): P
   }
   const withMath = renderMathExpressions(parsed);
   const highlighted = block.highlight ? await highlightCodeBlocks(withMath) : withMath;
-  return sanitize(highlighted);
+  return applyBidiAutoDirection(sanitize(highlighted));
 };
 
 /**
@@ -829,7 +864,7 @@ export const renderMarkdownSync = (
     return renderPlainText(text);
   }
   const withMath = renderMathExpressions(parsed);
-  return sanitize(withMath);
+  return applyBidiAutoDirection(sanitize(withMath));
 };
 
 export type RenderedBlock = {

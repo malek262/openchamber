@@ -113,7 +113,7 @@ describe('Markdown parser failures', () => {
   // their own timeout. A bare `>` nests the same way at half the length.
   const PARSER_OVERFLOW_TIMEOUT_MS = 60_000;
   const source = `${'>'.repeat(20000)}<img src=x onerror="alert(1)"> & text\n  **unfinished`;
-  const fallback = `<div class="whitespace-pre-wrap break-words">${escapeRawMarkdownHtml(source)}</div>`;
+  const fallback = `<div class="oc-bidi-plaintext whitespace-pre-wrap break-words">${escapeRawMarkdownHtml(source)}</div>`;
 
   test('preserves source as inert text on first paint in both image modes', () => {
     expect(renderMarkdownSync(source, 'inline')).toBe(fallback);
@@ -149,11 +149,11 @@ describe('Markdown disclosures', () => {
   test('renders summaries and rich Markdown without allowing raw HTML attributes', () => {
     const html = renderMarkdownSync('<details open><summary>Review **ready**</summary>\n\n> Quoted review\n\n1. First\n2. Second\n\n```sh\nbun test\n```\n\n</details>\n\nAfter');
     expect(html).toContain('<details data-md-details open>');
-    expect(html).toContain('<summary>Review <strong>ready</strong></summary>');
+    expect(html).toContain('<summary dir="auto">Review <strong>ready</strong></summary>');
     expect(html).toContain('<blockquote>');
     expect(html).toContain('<ol>');
     expect(html).toContain('<code class="language-sh">bun test');
-    expect(html).toContain('</details><p>After</p>');
+    expect(html).toContain('</details><p dir="auto">After</p>');
     const unsafe = renderMarkdownSync('<details onclick="alert(1)"><summary>Unsafe</summary>text</details>');
     expect(unsafe).not.toContain('<details');
     expect(unsafe).toContain('&lt;details');
@@ -166,8 +166,8 @@ describe('Markdown disclosures', () => {
     expect(html.match(/<details /g)).toHaveLength(2);
     expect(html).toContain('<code>&lt;/details&gt;</code>');
     expect(html).toContain('<strong>Nested</strong>');
-    expect(html).toContain('</details><p>Outer end</p>');
-    expect(html).toContain('</details><p>After</p>');
+    expect(html).toContain('</details><p dir="auto">Outer end</p>');
+    expect(html).toContain('</details><p dir="auto">After</p>');
     expect(renderMarkdownSync('```html\n<details><summary>Example</summary></details>\n```')).not.toContain('<details');
   });
 
@@ -179,12 +179,12 @@ describe('Markdown disclosures', () => {
     expect(next).toHaveLength(2);
     expect(next[0]).toEqual(first[0]);
     expect(next[1]?.html).toContain('<details data-md-details>');
-    expect(next[1]?.html).toContain('<li>More</li>');
+    expect(next[1]?.html).toContain('<li dir="auto">More</li>');
     expect(next[1]?.html).toContain('bun test');
     expect(next[1]?.html.endsWith('</details>')).toBe(true);
     const finished = await renderMarkdownBlocks(`${prefix}> First\n\n</details>\n\nAfter`, true);
     expect(finished).toHaveLength(3);
-    expect(finished[2]?.html).toContain('<p>After</p>');
+    expect(finished[2]?.html).toContain('<p dir="auto">After</p>');
   });
 
   test('handles incomplete summary and closing tag prefixes without losing content', async () => {
@@ -197,6 +197,88 @@ describe('Markdown disclosures', () => {
         expect(html).toContain('<strong>Body</strong>');
       }
     }
+  });
+});
+
+describe('bidirectional text (openchamber#1753)', () => {
+  test('marks text blocks with dir="auto" so each block resolves its own base direction', () => {
+    const html = renderMarkdownSync([
+      'مرحبا بالعالم — فقرة عربية',
+      '',
+      'An English paragraph',
+      '',
+      '# عنوان عربي',
+      '',
+      '> اقتباس عربي',
+      '',
+      '- عنصر أول',
+      '- عنصر ثاني',
+      '',
+      '| خلية | Cell |',
+      '| --- | --- |',
+      '| واحد | two |',
+    ].join('\n'));
+
+    expect(html).toContain('<p dir="auto">مرحبا بالعالم — فقرة عربية</p>');
+    expect(html).toContain('<p dir="auto">An English paragraph</p>');
+    expect(html).toContain('<h1 dir="auto">عنوان عربي</h1>');
+    expect(html).toContain('<li dir="auto">عنصر أول</li>');
+    expect(html).toContain('<td dir="auto">واحد</td>');
+    expect(html).toContain('<th dir="auto">خلية</th>');
+  });
+
+  test('leaves containers untagged — their dir="auto" could never resolve past directed children', () => {
+    // Per the HTML spec, dir="auto" skips descendants that carry their own
+    // dir attribute, so a tagged `ul`/`ol`/`blockquote` full of tagged blocks
+    // would stay LTR forever. Container chrome is CSS-only (:has(:dir(rtl))).
+    const html = renderMarkdownSync('> اقتباس\n\n- عنصر\n\n1. بند');
+
+    expect(html).toContain('<blockquote>');
+    expect(html).toContain('<ul>');
+    expect(html).toContain('<ol>');
+    expect(html).not.toContain('<blockquote dir=');
+    expect(html).not.toContain('<ul dir=');
+    expect(html).not.toContain('<ol dir=');
+  });
+
+  test('keeps code blocks on the explicit LTR policy, even with an RTL opening comment', () => {
+    // Regression case from the issue discussion: `// مرحبا` first, then code.
+    // `pre` must never get dir="auto" — the whole block would flip RTL.
+    const html = renderMarkdownSync('```js\n// مرحبا هذا تعليق عربي\nconst x = 1;\n```');
+
+    expect(html).toContain('<pre>');
+    expect(html).not.toContain('<pre dir=');
+    expect(html).not.toContain('<code dir=');
+  });
+
+  test('does not inject attributes into escaped markup inside code', () => {
+    const html = renderMarkdownSync('```html\n<p>مرحبا</p>\n<ul><li>عنصر</li></ul>\n```');
+
+    expect(html).toContain('&lt;p&gt;مرحبا&lt;/p&gt;');
+    expect(html).toContain('&lt;li&gt;عنصر&lt;/li&gt;');
+    expect(html).not.toContain('<p dir="auto">مرحبا');
+    expect(html).not.toContain('<li dir="auto">عنصر');
+  });
+
+  test('leaves inline runs to the bidi algorithm — no attributes on inline elements', () => {
+    const html = renderMarkdownSync('فقرة عربية تحتوي على `npm install` ورابط [مثال](https://example.com).');
+
+    expect(html).toContain('<p dir="auto">');
+    expect(html).toContain('<code>npm install</code>');
+    expect(html).toContain('href="https://example.com"');
+    expect(html).not.toContain('<code dir=');
+    expect(html).not.toContain('<a dir=');
+  });
+
+  test('sync first paint and async settled render agree on the injected attributes', async () => {
+    resetMarkdownHtmlCacheForTests();
+    const text = 'فقرة عربية\n\nEnglish paragraph\n\n- عنصر';
+
+    const sync = renderMarkdownSync(text);
+    const settled = await renderMarkdownBlocks(text, false);
+
+    expect(sync).toBe(settled.map((block) => block.html).join(''));
+    expect(sync).toContain('<p dir="auto">فقرة عربية</p>');
   });
 });
 
