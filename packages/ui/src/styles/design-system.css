@@ -225,6 +225,15 @@
     text-align: left;
   }
 
+  /* Inline technical runs are isolated LTR islands: without isolation,
+     neutral punctuation at an RTL/LTR boundary (`npm install.` inside
+     Arabic prose) adopts the surrounding direction and jumps to the wrong
+     side of the run. File links carry paths, so they follow the same rule. */
+  .markdown-content :where(code, kbd, samp, [data-openchamber-file-link="true"]) {
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+
   /* Directional container chrome. `dir="auto"` on a container skips
      descendants carrying their own `dir`, so a quote or a loose list item
      whose text sits in a nested block never resolves RTL by itself. `:dir()`
