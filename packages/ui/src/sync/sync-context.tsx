@@ -73,6 +73,8 @@ import {
 import { useConfigStore } from "@/stores/useConfigStore"
 import { refreshStoresForCatalogKind } from "@/stores/catalogRefresh"
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { useSessionTabsStore } from "@/stores/useSessionTabsStore"
+import { createTabSessionHistoryHolds } from "./tabSessionHistoryHolds"
 import { spaceIdOfDirectory } from "@/lib/spaces/space-route"
 import { refreshSpacesJourney, useSpacesStore } from "@/lib/spaces/spaces-store"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
@@ -2894,6 +2896,28 @@ export function SyncProvider(props: {
       if (store) dropCachedSessionMessageRecordsSnapshots(store, [sessionID])
     },
   }), [childStores, messageLoader, runtimeKey])
+
+  // A session with an open tab is in the user's working set: retain its
+  // transcript so switching tabs never pays an idle-eviction refetch. The
+  // hold follows the tab's lifetime, and the strip's own cap (10) bounds how
+  // many sessions this can protect.
+  useEffect(() => {
+    const holds = createTabSessionHistoryHolds((target) => messageLoader.retainSessionHistory(target, "read"))
+    const syncHolds = () => {
+      holds.sync(useSessionTabsStore.getState().tabIds, (sessionID) => {
+        const session = useGlobalSessionsStore.getState().entityById.get(sessionID)
+        return session ? resolveGlobalSessionDirectory(session) : null
+      })
+    }
+    const unsubscribeTabs = useSessionTabsStore.subscribe(syncHolds)
+    const unsubscribeSessions = useGlobalSessionsStore.subscribe(syncHolds)
+    syncHolds()
+    return () => {
+      unsubscribeTabs()
+      unsubscribeSessions()
+      holds.dispose()
+    }
+  }, [messageLoader])
 
   useEffect(() => {
     setImperativeSessionMessageLoader(messageLoader)
