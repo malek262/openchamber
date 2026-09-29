@@ -16,9 +16,12 @@ export type DetachedMarkdownDomCacheStats = {
   entries: number;
 };
 
-// Holds detached, fully decorated Markdown DOM. The cache is intentionally
-// small: it accelerates recent-session and reverse-scroll remounts without
-// retaining whole session trees or depending on browser-specific byte guesses.
+// Holds detached, fully decorated Markdown DOM. Entries let a remount restore
+// rendered nodes instead of re-parsing and re-decorating them, so the sizing
+// tracks the working set that remounts most: the session tab strip caps at
+// ten tabs, and twelve entries per session cover the visible window plus a
+// scrollback margin. Memory stays bounded by the session count, not by
+// browser-specific byte guesses.
 type DetachedMarkdownDomCacheLimits = {
   maxSessions: number;
   maxEntriesPerSession: number;
@@ -27,10 +30,10 @@ type DetachedMarkdownDomCacheLimits = {
 type SessionCache = Map<string, DetachedMarkdownDom>;
 
 const DEFAULT_LIMITS: DetachedMarkdownDomCacheLimits = {
-  // Eight buckets cover a broader recent-session working set without
+  // Twelve buckets cover the ten-tab working set plus headroom without
   // coupling eviction to React commit or microtask timing.
-  maxSessions: 8,
-  maxEntriesPerSession: 4,
+  maxSessions: 12,
+  maxEntriesPerSession: 12,
 };
 
 export class DetachedMarkdownDomCache {
