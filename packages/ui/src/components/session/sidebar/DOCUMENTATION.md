@@ -133,10 +133,35 @@ the header and mobile list. Enter explicitly submits the owning form on
 keydown; Escape cancels. IME composition keys keep their text-input behavior,
 and held Enter does not submit repeatedly.
 
-Run fusion eligibility comes from `lib/multirun/identity.ts`, with title parsing
-only for unmarked legacy sessions. Row memoization compares those same semantics
-so metadata-only membership changes update the menu. See
-`lib/multirun/DOCUMENTATION.md` for source selection and fork rules.
+## Multi-run rows
+
+A multi-run (`lib/multirun/runs.ts`, two or more active members) renders as one
+`run` row instead of one row per lane. `SessionProjectCollection` builds the
+run index from the active root sessions and hands it to the row model; grouping
+only receives `runKeyBySessionId`, kept referentially stable while membership is
+unchanged so ordinary session updates do not invalidate project sections.
+
+- Grouping lists every member under the project root, so a lane's worktree
+  does not form its own group while it belongs to a run. After "Keep" the
+  survivor is no longer a run member and falls back into its worktree group.
+- The row model collapses members into one entry at the first member's
+  position (`collapseRunEntries`) in every container: project groups, folders,
+  Recent, Work and Timeline. A run spends one slot of a reveal limit.
+- The run row is not a session: it never enters selection or the selection
+  pool. Expanded (`runExpansionKey`, same `expandedParents` store) it lists its
+  lanes as session rows one level deeper; search forces it open. In Timeline
+  it never expands and renders through `SessionTimelineRowBody` like the
+  session rows around it (project and time, title, lane count and model
+  logos); the overview lists the lanes.
+- Its activity indicator aggregates the lanes through
+  `CollapsedSessionActivityIndicator`. Clicking it opens the run overview
+  (`useUIStore.runOverviewKey`); a lane's context menu offers the same.
+
+The mobile sheet does not use the row model: `MobileSessionsSheet` builds the
+same index, moves members to the project root bucket and renders one
+`MobileRunRow` per run that opens the overview. Row memoization compares
+membership semantics (`sameMultiRunIdentity`, including the run title) so
+metadata-only changes update rows. See `lib/multirun/DOCUMENTATION.md`.
 
 ## In work
 
@@ -177,7 +202,13 @@ phone, because a short drag exposes the leftmost first: archive, pin (top-level
 rows), Track / Done (top-level rows, feature on), delete, rename; AI rename sits
 inside the rename editor. Top-level rows also show a pin marker beside the
 time; pins are the same device-local `useSessionPinnedStore` the desktop menu
-writes, so a pin set on one device does not appear on another. Row memoization
+writes, so a pin set on one device does not appear on another. Mobile rows
+also show the goal glyph and the permission/question badges
+(`apps/MobileSessionStateBadges.tsx`): before the time on grouped rows, at the
+end of the branch line on timeline rows. Counts come from the cross-directory
+request index (`sync/global-blocking-requests.ts`), not directory stores, so a
+never-opened project still shows them; a collapsed or timeline row also counts
+its subsessions' requests. Row memoization
 compares `metadata` by reference and `time.idle`, so metadata-only changes
 (work, goal, recap) re-render the row.
 
@@ -191,7 +222,8 @@ renders `projects`.
   the usual Chats limit. Pinned chats are always shown and never spend that
   limit, so Show more/Show fewer count only unpinned rows. Chats rows render
   with `renderContext: 'timeline-chat'`: one line, no left gutter, pin marker
-  and status dot on the right beside the time. Collapsing a zone header resets its
+  and status dot on the right beside the time; the goal glyph and badges ride
+  in the same cluster. Collapsing a zone header resets its
   Show more state.
 - Zone headers are sticky in the projects view and never in the timeline; there
   is no user toggle. Timeline zone headers drop the leading icon and use a
@@ -226,6 +258,10 @@ renders `projects`.
   branch, preserving the resolver's deliberate branch suppression. The full
   subtree remains available to archive/delete actions, and managed Chats keep
   their separate projection.
+- A timeline row's third line ends with its state cluster: goal glyph, PR (or
+  the zombie warning), permission/question badges, provider logo. The goal
+  sits there rather than in the first-line meta because hover actions cover
+  that meta and the running counter owns it during a turn.
 - Search filters Timeline with the same rule as Recent (exact `ses_` id, else
   title contains) and counts one match per listed row.
 
