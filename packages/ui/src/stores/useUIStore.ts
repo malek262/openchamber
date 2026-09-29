@@ -41,6 +41,7 @@ export type DesktopWindowControlsPosition = 'left' | 'right';
 export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 export type FileEditorKeymap = 'default' | 'vim';
 export type LargeTextPasteBehavior = 'ask' | 'attach' | 'inline';
+export type SessionGoalChecker = 'classifier' | 'small-model';
 
 export const DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR: LargeTextPasteBehavior = 'ask';
 
@@ -784,8 +785,10 @@ const clampContextPanelRoots = (
 interface UIStore {
 
   theme: 'light' | 'dark' | 'system';
-  isMultiRunLauncherOpen: boolean;
-  multiRunLauncherPrefillPrompt: string;
+  /** Key of the multi-run whose overview replaces the chat area, if open. */
+  runOverviewKey: string | null;
+  /** One-shot request for the composer to enter parallel mode; the composer consumes it. */
+  parallelComposerRequest: { id: number; prompt: string } | null;
   isSidebarOpen: boolean;
   sidebarWidth: number;
   contextPanelByDirectory: Record<string, ContextPanelDirectoryState>;
@@ -878,6 +881,8 @@ interface UIStore {
   settingsProvidersConnectRequested: boolean;
   /** Set by links elsewhere in Settings; the Providers page opens Classification providers once and clears it. */
   settingsProvidersClassificationRequested: boolean;
+  /** A provider another Settings page asked the Providers page to open; the page opens it once and clears it. */
+  settingsProvidersOpenRequested: string | null;
   /**
    * A link inside Settings asking to open another page and, optionally, scroll
    * to one of its items the way a search result does. SettingsView consumes it.
@@ -895,6 +900,8 @@ interface UIStore {
   /** Let Jev move a session into work when real work starts in it. */
   sessionWorkAutoOpen: boolean;
   sessionGoalEnabled: boolean;
+  /** Who checks goal progress; the small model checks when no classification provider can. */
+  sessionGoalChecker: SessionGoalChecker;
   sessionGoalDefaultBudgetEnabled: boolean;
   sessionGoalDefaultBudget: number;
   collapsibleThinkingBlocks: boolean;
@@ -997,6 +1004,8 @@ interface UIStore {
   browserProvider: string;
   agentMemoryToolEnabled: boolean;
   agentNotifyToolEnabled: boolean;
+  /** Whether OpenChamber's agent tools sit behind OpenCode's Code Mode instead of being direct tools. */
+  agentToolsCodeMode: boolean;
   /** The isolated-spaces switch as saved; the server applies it at its next start. */
   isolatedSpacesEnabled: boolean;
   /** The permission mode the server writes onto each new top-level session. */
@@ -1119,6 +1128,7 @@ interface UIStore {
   setSettingsProjectPath: (path: string | null) => void;
   setSettingsProvidersConnectRequested: (requested: boolean) => void;
   setSettingsProvidersClassificationRequested: (requested: boolean) => void;
+  setSettingsProvidersOpenRequested: (providerId: string | null) => void;
   requestSettingsJump: (page: string, itemId?: string | null) => void;
   clearSettingsJumpRequest: () => void;
   setSettingsRemoteInstancesSelectedId: (instanceId: string | null) => void;
@@ -1130,6 +1140,7 @@ interface UIStore {
   setSessionWorkEnabled: (value: boolean) => void;
   setSessionWorkAutoOpen: (value: boolean) => void;
   setSessionGoalEnabled: (value: boolean) => void;
+  setSessionGoalChecker: (value: SessionGoalChecker) => void;
   setSessionGoalDefaultBudgetEnabled: (value: boolean) => void;
   setSessionGoalDefaultBudget: (value: number) => void;
   setCollapsibleThinkingBlocks: (value: boolean) => void;
@@ -1192,7 +1203,7 @@ interface UIStore {
   setLinearIssueListPriority: (priority: LinearIssueListPriority) => void;
   resetLinearIssueListFilters: () => void;
   setLinearIssueFocus: (identifier: string | null) => void;
-  setMultiRunLauncherOpen: (open: boolean) => void;
+  setRunOverviewKey: (runKey: string | null) => void;
   setTimelineDialogOpen: (open: boolean) => void;
   setPromptNavigatorPanelOpen: (open: boolean) => void;
   togglePromptNavigatorPanel: () => void;
@@ -1221,6 +1232,7 @@ interface UIStore {
   setBrowserProvider: (value: string) => void;
   setAgentMemoryToolEnabled: (value: boolean) => void;
   setAgentNotifyToolEnabled: (value: boolean) => void;
+  setAgentToolsCodeMode: (value: boolean) => void;
   setIsolatedSpacesEnabled: (value: boolean) => void;
   setPermissionDefaultMode: (value: PermissionMode) => void;
   setAgentMemoryFeatureAvailable: (value: boolean) => void;
@@ -1253,8 +1265,8 @@ interface UIStore {
   setViewPagerPage: (page: 'left' | 'center' | 'right') => void;
   toggleExpandedInput: () => void;
   setExpandedInput: (value: boolean) => void;
-  openMultiRunLauncher: () => void;
-  openMultiRunLauncherWithPrompt: (prompt: string) => void;
+  requestParallelComposer: (prompt?: string) => void;
+  consumeParallelComposerRequest: (id: number) => void;
   setReportUsage: (value: boolean) => void;
   setShortcutOverride: (actionId: string, combo: ShortcutCombo) => void;
   clearShortcutOverride: (actionId: string) => void;
@@ -1269,8 +1281,8 @@ export const useUIStore = create<UIStore>()(
       (set, get) => ({
 
         theme: 'system',
-        isMultiRunLauncherOpen: false,
-        multiRunLauncherPrefillPrompt: '',
+        runOverviewKey: null,
+        parallelComposerRequest: null,
         isSidebarOpen: true,
         sidebarWidth: LEFT_SIDEBAR_DEFAULT_WIDTH,
         contextPanelByDirectory: {},
@@ -1319,6 +1331,7 @@ export const useUIStore = create<UIStore>()(
         settingsProjectPath: null,
         settingsProvidersConnectRequested: false,
         settingsProvidersClassificationRequested: false,
+        settingsProvidersOpenRequested: null,
         settingsJumpRequest: null,
         settingsRemoteInstancesSelectedId: null,
         eventStreamStatus: 'idle',
@@ -1330,6 +1343,7 @@ export const useUIStore = create<UIStore>()(
         sessionWorkEnabled: true,
         sessionWorkAutoOpen: true,
         sessionGoalEnabled: true,
+        sessionGoalChecker: 'small-model',
         sessionGoalDefaultBudgetEnabled: false,
         sessionGoalDefaultBudget: 200_000,
         collapsibleThinkingBlocks: true,
@@ -1411,6 +1425,7 @@ export const useUIStore = create<UIStore>()(
         browserProvider: 'builtin',
         agentMemoryToolEnabled: false,
         agentNotifyToolEnabled: false,
+        agentToolsCodeMode: false,
         isolatedSpacesEnabled: false,
         permissionDefaultMode: 'ask',
         agentMemoryFeatureAvailable: false,
@@ -2073,36 +2088,36 @@ export const useUIStore = create<UIStore>()(
 
         setScheduledTasksDialogOpen: (open) => {
           set(open
-            ? { isScheduledTasksDialogOpen: true, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false, openGuestPageId: null }
+            ? { isScheduledTasksDialogOpen: true, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, runOverviewKey: null, openGuestPageId: null }
             : { isScheduledTasksDialogOpen: false });
         },
 
         setArchivePageOpen: (open) => {
           set(open
-            ? { isArchivePageOpen: true, isUsageStatsPageOpen: false, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false, openGuestPageId: null }
+            ? { isArchivePageOpen: true, isUsageStatsPageOpen: false, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, runOverviewKey: null, openGuestPageId: null }
             : { isArchivePageOpen: false });
         },
 
         setUsageStatsPageOpen: (open) => {
           set(open
-            ? { isUsageStatsPageOpen: true, isArchivePageOpen: false, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false, openGuestPageId: null }
+            ? { isUsageStatsPageOpen: true, isArchivePageOpen: false, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, runOverviewKey: null, openGuestPageId: null }
             : { isUsageStatsPageOpen: false });
         },
 
         setWorktreesPageProjectId: (projectId) => {
           set(projectId
-            ? { worktreesPageProjectId: projectId, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, isMultiRunLauncherOpen: false, openGuestPageId: null }
+            ? { worktreesPageProjectId: projectId, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, runOverviewKey: null, openGuestPageId: null }
             : { worktreesPageProjectId: null });
         },
 
         setOpenGuestPage: (id) => {
-          set(id ? { openGuestPageId: id, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+          set(id ? { openGuestPageId: id, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, runOverviewKey: null }
             : { openGuestPageId: null });
         },
 
         closeMainSurfaces: () => {
           const state = get();
-          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.isUsageStatsPageOpen && !state.worktreesPageProjectId && !state.isMultiRunLauncherOpen && !state.openGuestPageId) {
+          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.isUsageStatsPageOpen && !state.worktreesPageProjectId && !state.runOverviewKey && !state.openGuestPageId) {
             return;
           }
           set({
@@ -2110,8 +2125,7 @@ export const useUIStore = create<UIStore>()(
             isArchivePageOpen: false,
             isUsageStatsPageOpen: false,
             worktreesPageProjectId: null,
-            isMultiRunLauncherOpen: false,
-            multiRunLauncherPrefillPrompt: '',
+            runOverviewKey: null,
             openGuestPageId: null,
           });
         },
@@ -2146,6 +2160,9 @@ export const useUIStore = create<UIStore>()(
 
         setSettingsProvidersClassificationRequested: (requested) => {
           set({ settingsProvidersClassificationRequested: requested });
+        },
+        setSettingsProvidersOpenRequested: (providerId) => {
+          set({ settingsProvidersOpenRequested: providerId });
         },
         requestSettingsJump: (page, itemId = null) => {
           set({ settingsJumpRequest: { page, itemId } });
@@ -2203,6 +2220,10 @@ export const useUIStore = create<UIStore>()(
 
         setSessionGoalEnabled: (value) => {
           set({ sessionGoalEnabled: value });
+        },
+
+        setSessionGoalChecker: (value) => {
+          set({ sessionGoalChecker: value });
         },
 
         setSessionGoalDefaultBudgetEnabled: (value) => {
@@ -2680,40 +2701,24 @@ export const useUIStore = create<UIStore>()(
           }
         },
 
-        // Multi-run is one of the mutually exclusive full-page surfaces:
+        // The run overview is one of the mutually exclusive full-page surfaces:
         // opening it closes the other surfaces and vice versa.
-        setMultiRunLauncherOpen: (open) => {
+        setRunOverviewKey: (runKey) => {
+          set(runKey
+            ? { runOverviewKey: runKey, isSessionSwitcherOpen: false, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, openGuestPageId: null }
+            : { runOverviewKey: null });
+        },
+
+        requestParallelComposer: (prompt = '') => {
           set((state) => ({
-            isMultiRunLauncherOpen: open,
-            multiRunLauncherPrefillPrompt: open ? state.multiRunLauncherPrefillPrompt : '',
-            ...(open ? { isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isUsageStatsPageOpen: false, worktreesPageProjectId: null, openGuestPageId: null } : {}),
+            parallelComposerRequest: { id: (state.parallelComposerRequest?.id ?? 0) + 1, prompt },
+            isSessionSwitcherOpen: false,
           }));
         },
 
-        openMultiRunLauncher: () => {
-          set({
-            openGuestPageId: null,
-            isMultiRunLauncherOpen: true,
-            multiRunLauncherPrefillPrompt: '',
-            isSessionSwitcherOpen: false,
-            isScheduledTasksDialogOpen: false,
-            isArchivePageOpen: false,
-            isUsageStatsPageOpen: false,
-            worktreesPageProjectId: null,
-          });
-        },
-
-        openMultiRunLauncherWithPrompt: (prompt) => {
-          set({
-            openGuestPageId: null,
-            isMultiRunLauncherOpen: true,
-            multiRunLauncherPrefillPrompt: prompt,
-            isSessionSwitcherOpen: false,
-            isScheduledTasksDialogOpen: false,
-            isArchivePageOpen: false,
-            isUsageStatsPageOpen: false,
-            worktreesPageProjectId: null,
-          });
+        consumeParallelComposerRequest: (id) => {
+          if (get().parallelComposerRequest?.id !== id) return;
+          set({ parallelComposerRequest: null });
         },
 
         setTimelineDialogOpen: (open) => {
@@ -2799,6 +2804,9 @@ export const useUIStore = create<UIStore>()(
         },
         setAgentNotifyToolEnabled: (value) => {
           set({ agentNotifyToolEnabled: value });
+        },
+        setAgentToolsCodeMode: (value) => {
+          set({ agentToolsCodeMode: value });
         },
         setAgentMemoryFeatureAvailable: (value) => {
           set({ agentMemoryFeatureAvailable: value });
@@ -3212,6 +3220,7 @@ export const useUIStore = create<UIStore>()(
           sessionWorkEnabled: state.sessionWorkEnabled,
           sessionWorkAutoOpen: state.sessionWorkAutoOpen,
           sessionGoalEnabled: state.sessionGoalEnabled,
+          sessionGoalChecker: state.sessionGoalChecker,
           sessionGoalDefaultBudgetEnabled: state.sessionGoalDefaultBudgetEnabled,
           sessionGoalDefaultBudget: state.sessionGoalDefaultBudget,
           collapsibleThinkingBlocks: state.collapsibleThinkingBlocks,
@@ -3275,6 +3284,7 @@ export const useUIStore = create<UIStore>()(
           browserProvider: state.browserProvider,
           agentMemoryToolEnabled: state.agentMemoryToolEnabled,
           agentNotifyToolEnabled: state.agentNotifyToolEnabled,
+          agentToolsCodeMode: state.agentToolsCodeMode,
           isolatedSpacesEnabled: state.isolatedSpacesEnabled,
           permissionDefaultMode: state.permissionDefaultMode,
           agentMemoryViewedAt: state.agentMemoryViewedAt,

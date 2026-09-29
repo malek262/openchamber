@@ -54,6 +54,7 @@ import {
 } from "./session-event-router"
 import { shouldConsumeBulkArchiveEcho } from "./bulk-archive-echo"
 import { applyForkedSession, noteForkedSessionPatched } from "./forked-session"
+import { useUIStore } from "@/stores/useUIStore"
 import { useBtwStore } from "@/stores/useBtwStore"
 import { selectNewChildSessions } from "./child-session-discovery"
 import { syncDebug } from "./debug"
@@ -73,7 +74,7 @@ import { useConfigStore } from "@/stores/useConfigStore"
 import { refreshStoresForCatalogKind } from "@/stores/catalogRefresh"
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { spaceIdOfDirectory } from "@/lib/spaces/space-route"
-import { useSpacesStore } from "@/lib/spaces/spaces-store"
+import { refreshSpacesJourney, useSpacesStore } from "@/lib/spaces/spaces-store"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { toast } from "@/components/ui"
 import { appendNotification } from "./notification-store"
@@ -2598,14 +2599,18 @@ export function SyncProvider(props: {
       routeDirectory: (directory, payload) => {
         return resolveDirectoryFromRoutingIndex(routingIndex, directory, payload, childStores)
       },
-      onEvents: (directory, payloads) => {
-        // Track ALL stream activity (including heartbeats) as proof of
-        // connection health. The watchdog stale check uses this to distinguish
-        // a genuinely dead stream (no heartbeats for 20s) from a quiet-but-
-        // connected session that is only receiving heartbeats. Excluding
-        // heartbeats here caused issue #1656: the stale timer fired for any
-        // quiet session, triggering redundant full resyncs every ~15s.
+      // Track ALL stream activity (including heartbeats) as proof of
+      // connection health. The watchdog stale check uses this to distinguish
+      // a genuinely dead stream (no heartbeats for 20s) from a quiet-but-
+      // connected session that is only receiving heartbeats. Excluding
+      // heartbeats caused issue #1656: the stale timer fired for any quiet
+      // session, triggering redundant full resyncs every ~15s. OpenCode 2
+      // heartbeats never become events: OpenCode sends an SSE comment and the
+      // WS bridge an `openchamber:heartbeat` frame, so delivered events miss them.
+      onStreamActivity: () => {
         lastStreamActivityAtRef.current = Date.now()
+      },
+      onEvents: (directory, payloads) => {
         const batch = createDirectoryEventBatch()
         try {
           for (const payload of payloads) {
@@ -2625,7 +2630,15 @@ export function SyncProvider(props: {
         // that one space, the directories the global list knows for it, so a session made or
         // finished during the gap shows up without a full global reload.
         useSpacesStore.getState().noteStream(spaceId, status)
-        if (status !== "connected") return
+        if (status !== "connected") {
+          // A space that stopped itself for the idle stop ends its stream on its way out. While the
+          // host's list still says it runs, read the list again at each failed reconnect, which the
+          // host paces, so the group says "stopped" rather than "not answering" once it is down.
+          if (useSpacesStore.getState().journey?.get(spaceId)?.state === "running") {
+            void refreshSpacesJourney().catch(() => undefined)
+          }
+          return
+        }
         const directories = Array.from(useGlobalSessionsStore.getState().sessionsByDirectory.keys())
           .filter((directory) => spaceIdOfDirectory(directory) === spaceId)
         const spaceDirectory = useSpacesStore.getState().spaces.get(spaceId)?.directory
@@ -2633,7 +2646,24 @@ export function SyncProvider(props: {
         if (directories.length === 0) return
         void useGlobalSessionsStore.getState().refreshSessionsForDirectories(directories).catch(() => undefined)
       },
+      onSpaceProgress: (progress) => {
+        // A step of a creation moves the space's group on at once. A space this list has not seen,
+        // made from another window among them, and the end of a creation, whose entry then comes
+        // from the place, are read again from the journey route.
+        const known = useSpacesStore.getState().noteProgress(progress)
+        if (known && progress.step !== "ready" && progress.step !== "failed") return
+        void refreshSpacesJourney().catch(() => undefined)
+      },
+      onSpaceSetup: () => {
+        // The setup commands of a space moved on; what they do now is in the list.
+        void refreshSpacesJourney().catch(() => undefined)
+      },
       onReconnect: ({ replayReset }) => {
+        // The first connection and every one after a gap: spaces being made or whose making failed
+        // are known only to the journey list, and a step announced during the gap was missed.
+        if (useUIStore.getState().isolatedSpacesEnabled && !isVSCodeRuntime()) {
+          void refreshSpacesJourney().catch(() => undefined)
+        }
         // Queue recovery is independent of the directory-bootstrap debounce.
         void useMessageQueueStore.getState().resync().catch(() => undefined)
         useConfigStore.setState({

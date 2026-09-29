@@ -8,6 +8,10 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { prepareLocalAttachments, useInputStore, type SyntheticContextPart } from '@/sync/input-store';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { openParallelComposer } from '@/lib/multirun/openParallelComposer';
+import { useParallelComposer } from './composer/parallel/useParallelComposer';
+import { ParallelComposerStrip } from './composer/parallel/ParallelComposerStrip';
 import {
     ACCEPTED_ATTACHMENT_EXTENSIONS,
     ATTACHMENT_ACCEPT,
@@ -68,6 +72,7 @@ import { toast } from '@/components/ui';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useTabletLayout } from '@/lib/device';
 import { useHardwareKeyboard } from '@/lib/hardwareKeyboard';
+import { isCapacitorApp } from '@/lib/platform';
 import { isIMECompositionEvent } from '@/lib/ime';
 import { getCycledPrimaryAgentName, type MobileControlsPanel } from './mobileControlsUtils';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
@@ -184,6 +189,11 @@ import {
     MobileDraftTargetSheets,
     MobileDraftTargetTriggers,
 } from './composer/ui/DraftTargetSelectors';
+import { NewSpaceDialog } from '@/components/session/spaces/NewSpaceDialog';
+import { isSpaceCreationRequest } from '@/lib/spaces/space-creation';
+import { spaceModelRefusal } from '@/lib/spaces/space-model-access';
+import { useSpacesStore } from '@/lib/spaces/spaces-store';
+import { isDraftSendWaiting, subscribeDraftSendWaiting } from '@/lib/worktrees/pendingDraftWorktree';
 import { ComposerAutocompletePopups } from './composer/ui/ComposerAutocompletePopups';
 import { ComposerFooter } from './composer/ui/ComposerFooter';
 import { MobilePillComposer } from './composer/ui/MobilePillComposer';
@@ -946,6 +956,26 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
     const [prPickerOpen, setPrPickerOpen] = React.useState(false);
     const [linearPickerOpen, setLinearPickerOpen] = React.useState(false);
+    // The paste-toast tap may need to reopen the collapsed mobile composer.
+    const mobileShell = useMobileComposerShell({
+        isMobile,
+        editorRef: composerRef,
+        formRef: composerFormRef,
+        setExpandedInput,
+        // Without a soft keyboard, keep the full composer up.
+        alwaysExpanded: hasHardwareKeyboard || isTabletLayout,
+        holders: {
+            controlsPanelOpen: Boolean(mobileControlsPanel),
+            attachMenuOpen: mobileAttachMenuOpen,
+            draftPickerOpen: mobileDraftPicker !== null,
+            issuePickerOpen,
+            prPickerOpen,
+            linearPickerOpen,
+            isDragging,
+        },
+    });
+    const mobileComposerExpanded = mobileShell.expanded;
+    const mobileTextareaFocused = mobileShell.focused;
     const [linkedIssue, setLinkedIssue] = React.useState<{
         number: number;
         title: string;
@@ -1214,7 +1244,36 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         }
     }, [isBtwActive, pendingInputText, consumePendingInputText]);
 
-    const hasContent = message.trim().length > 0 || attachedFiles.length > 0 || hasDrafts;
+    const parallel = useParallelComposer({
+        enabled: !isMobile && !isBtwActive,
+        draftOpen: newSessionDraftOpen && newSessionDraft?.target !== 'chat',
+        draftProjectId: newSessionDraft?.selectedProjectId ?? null,
+        message,
+        setMessage,
+    });
+    const parallelProjectId = newSessionDraft?.selectedProjectId ?? null;
+    const parallelProject = useProjectsStore(React.useCallback((state) => {
+        const project = state.projects.find((entry) => entry.id === (parallelProjectId ?? state.activeProjectId));
+        return project ? `${project.id}\n${project.path}` : null;
+    }, [parallelProjectId]));
+    const parallelProjectRef = React.useMemo(() => {
+        if (!parallelProject) return null;
+        const [id, path] = parallelProject.split('\n');
+        return { id, path };
+    }, [parallelProject]);
+    const enterParallel = parallel.enter;
+    const handleRunInParallel = React.useCallback(() => {
+        // The picker offers it everywhere; a run always starts from a new-session draft.
+        if (newSessionDraftOpen && newSessionDraft?.target !== 'chat') enterParallel();
+        else openParallelComposer(messageRef.current);
+    }, [enterParallel, newSessionDraft?.target, newSessionDraftOpen]);
+
+    // A linked reference is attached context, not decoration: the submission
+    // builder serializes it into the outgoing message, so a composer holding
+    // only one of those chips is not empty and has to be sendable on its own.
+    // BTW sends strip every kind but the guest one, so the gate stays out of BTW.
+    const hasLinkedReferences = Boolean(linkedIssue || linkedPr || linkedLinearIssue || linkedGuestIssue);
+    const hasContent = message.trim().length > 0 || attachedFiles.length > 0 || hasDrafts || (!isBtwActive && hasLinkedReferences);
     const hasQueuedMessages = !isBtwActive && queuedMessages.length > 0;
     const preparingBtwSend = useBtwStore((state) => Boolean(currentSessionId && state.byParent[currentSessionId]?.pendingSend));
     const canSend = (hasContent || hasQueuedMessages) && !(isBtwActive && (btwPanel.creating || preparingBtwSend));
@@ -1225,9 +1284,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const currentMessage = composerRef.current?.getValue() ?? message;
         return {
             message: currentMessage,
-            hasContent: currentMessage.trim().length > 0 || attachedFiles.length > 0 || hasDrafts,
+            hasContent: currentMessage.trim().length > 0 || attachedFiles.length > 0 || hasDrafts || (!isBtwActive && hasLinkedReferences),
         };
-    }, [attachedFiles.length, hasDrafts, message]);
+    }, [attachedFiles.length, hasDrafts, hasLinkedReferences, isBtwActive, message]);
 
     // Keep a ref to handleSubmit so callbacks don't depend on it.
     type SubmitOptions = {
@@ -1494,6 +1553,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         // inert while it is open.
         if (isMobileCommentOpen()) return;
         if (isBtwActive && currentSessionId && (btwPanel.creating || useBtwStore.getState().byParent[currentSessionId]?.pendingSend)) return;
+        // "Run in parallel" launches the run instead of sending a message.
+        if (parallel.isActive && !options?.queuedOnly) {
+            if (parallel.runCount >= 2) void parallel.launch();
+            return;
+        }
         const submitRuntimeKey = getRuntimeKey();
         const queuedOnly = options?.queuedOnly ?? false;
         const queuedMessageId = options?.queuedMessageId;
@@ -1505,7 +1569,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         const inputSnapshot = options?.presetText != null
             ? {
                 message: options.presetText,
-                hasContent: options.presetText.trim().length > 0 || attachedFiles.length > 0 || hasDrafts,
+                hasContent: options.presetText.trim().length > 0 || attachedFiles.length > 0 || hasDrafts || (!isBtwActive && hasLinkedReferences),
             }
             : getCurrentInputSnapshot();
         if (queuedOnly && autoReviewRunning) {
@@ -1618,6 +1682,23 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         if (!providerIdToSend || !modelIdToSend) {
             console.warn('Cannot send message: provider or model not selected');
             toast.error(t('chat.chatInput.toast.noModelSelected'));
+            return;
+        }
+
+        // A message to an isolated space goes only on a model the space holds a key for; otherwise
+        // it stays in the input with the reason and the way to the grant dialog.
+        const spaceRefusal = currentSessionId
+            ? spaceModelRefusal({ requestId: null, directory: currentSessionDirectoryForSync ?? currentDirectory ?? null }, providerIdToSend)
+            : newSessionDraftOpen
+                ? spaceModelRefusal({ requestId: newSessionDraft?.pendingWorktreeRequestId ?? null, directory: newSessionDraft?.directoryOverride ?? null }, providerIdToSend)
+                : null;
+        if (spaceRefusal) {
+            const provider = useConfigStore.getState().providers.find((entry) => entry.id === spaceRefusal.providerId)?.name ?? spaceRefusal.providerId;
+            toast.error(spaceRefusal.reason === 'needs_again'
+                ? t('spaces.draft.modelNeedsKeyAgain', { provider })
+                : t('spaces.draft.modelNotGranted', { provider }), {
+                action: { label: t('spaces.group.access.give'), onClick: () => useSpacesStore.getState().openAccessDialog(spaceRefusal.spaceId, spaceRefusal.providerId) },
+            });
             return;
         }
 
@@ -2809,10 +2890,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 largeTextPasteToastIdRef.current = null;
             }
 
-            const resolveLargePaste = (action: 'attach' | 'inline') => {
+            const resolveLargePaste = (action: 'attach' | 'inline', explicitlyChosen: boolean) => {
                 const resolution = resolveLargeTextPasteOffer(
                     largeTextPasteOfferIdRef.current,
                     offerId,
+                    { isMobile, explicitlyChosen },
                 );
                 largeTextPasteOfferIdRef.current = resolution.nextOfferId;
                 if (!resolution.accepted) {
@@ -2821,9 +2903,22 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 largeTextPasteToastIdRef.current = null;
                 if (action === 'attach') {
                     void attachAsFile();
-                    return;
+                } else {
+                    pasteInline();
                 }
-                pasteInline();
+                // Keep this in the toast tap's gesture: iOS won't raise the
+                // keyboard when focus is restored after the attachment awaits.
+                if (resolution.restoreFocus) {
+                    if (composerRef.current) {
+                        composerRef.current.focus({ preventScroll: isCapacitorApp() });
+                    } else {
+                        // The toast captures the paste-time shell state, but
+                        // the editor may have collapsed since then. The
+                        // insertion above appends to its draft; expand mounts
+                        // and focuses the editor with the platform's keyboard timing.
+                        mobileShell.expand();
+                    }
+                }
             };
 
             largeTextPasteToastIdRef.current = toast.info(
@@ -2833,16 +2928,16 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                     className: LARGE_TEXT_PASTE_TOAST_CLASSNAME,
                     action: {
                         label: t('chat.chatInput.toast.largeTextPaste.attach'),
-                        onClick: () => resolveLargePaste('attach'),
+                        onClick: () => resolveLargePaste('attach', true),
                     },
                     cancel: {
                         label: t('chat.chatInput.toast.largeTextPaste.inline'),
-                        onClick: () => resolveLargePaste('inline'),
+                        onClick: () => resolveLargePaste('inline', true),
                     },
                     onDismiss: () => {
                         // Dismissing without a choice keeps the paste — insert inline
                         // so clipboard content is not lost.
-                        resolveLargePaste('inline');
+                        resolveLargePaste('inline', false);
                     },
                 },
             );
@@ -2858,7 +2953,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
         e.preventDefault();
         await attachFilesWithCitation([...imageFiles, ...otherFiles], pastedText);
-    }, [addAttachedFile, attachFilesWithCitation, currentSessionId, inputMode, largeTextPasteBehavior, markFileMentionPasteSuppression, message, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
+    }, [addAttachedFile, attachFilesWithCitation, currentSessionId, inputMode, isMobile, largeTextPasteBehavior, markFileMentionPasteSuppression, message, mobileShell, newSessionDraftOpen, insertTextAtSelection, setMessage, t, updateAutocompleteState]);
 
     const handleFileSelect = (file: { name: string; path: string; relativePath?: string }) => {
 
@@ -3386,6 +3481,24 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         handleDraftDirectoryChange,
     } = useDraftTarget(showDraftTargetSelectors);
 
+    // The one entry to an isolated space: while the feature's switch is on, for a project the
+    // branch selector serves, never in VS Code (decision 16). The dialog keeps the project it
+    // was opened for, whatever the draft picks after.
+    const isolatedSpacesEnabled = useUIStore((state) => state.isolatedSpacesEnabled);
+    const [newSpaceProject, setNewSpaceProject] = React.useState<{ id: string; path: string } | null>(null);
+    // A message sent while the space is still being made waits for it; the composer is empty
+    // then, so this line is the only sign that the message was not lost.
+    const draftRequestId = newSessionDraft?.pendingWorktreeRequestId ?? null;
+    const messageWaitsForSpace = React.useSyncExternalStore(
+        subscribeDraftSendWaiting,
+        () => isDraftSendWaiting(draftRequestId) && isSpaceCreationRequest(draftRequestId),
+    );
+    const handleCreateSpace = React.useMemo(() => {
+        if (!isolatedSpacesEnabled || isVSCode || !selectedDraftProject || selectedDraftProject.kind === 'chat') return undefined;
+        const project = { id: selectedDraftProject.id, path: selectedDraftProject.path };
+        return () => setNewSpaceProject(project);
+    }, [isVSCode, isolatedSpacesEnabled, selectedDraftProject]);
+
     const chatSurfaceMode = useChatSurfaceMode();
     const isMiniChatSurface = chatSurfaceMode === 'mini-chat';
     const showDesktopDraftPresentation = (newSessionDraftOpen || draftPresentationExiting)
@@ -3416,30 +3529,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     }, [draftBranchItems, newSessionDraft?.bootstrapPendingDirectory, newSessionDraft?.pendingWorktreeRequestId, newSessionDraft?.preserveDirectoryOverride, selectedDraftDirectory, selectedDraftProject, setNewSessionDraftTarget, showDraftTargetSelectors]);
 
 
-    // Mobile pill composer: the collapse/expand state machine and the
-    // platform corrections that keep it from fighting the soft keyboard.
-    const mobileShell = useMobileComposerShell({
-        isMobile,
-        editorRef: composerRef,
-        formRef: composerFormRef,
-        setExpandedInput,
-        // The pill exists to buy screen back from the soft keyboard. A tablet
-        // has the room regardless, and with a hardware keyboard there is no
-        // soft keyboard to buy it back from — keep the real composer up.
-        alwaysExpanded: hasHardwareKeyboard || isTabletLayout,
-        holders: {
-            controlsPanelOpen: Boolean(mobileControlsPanel),
-            attachMenuOpen: mobileAttachMenuOpen,
-            draftPickerOpen: mobileDraftPicker !== null,
-            issuePickerOpen,
-            prPickerOpen,
-            linearPickerOpen,
-            isDragging,
-        },
-    });
-    const mobileComposerExpanded = mobileShell.expanded;
-    const mobileTextareaFocused = mobileShell.focused;
-
     // Mobile comment mode: subscription, scope ownership and the attach/cancel
     // transitions live in the hook; ChatInput only renders from it.
     const mobileComment = useMobileCommentComposerMode({
@@ -3464,8 +3553,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
 
     // Linked references render as chips beside the attached files, inside the
     // composer box and inside the mobile pill.
-    const hasLinkedReferences = !isVSCode && Boolean(linkedIssue || linkedPr || linkedLinearIssue || linkedGuestIssue);
-    const linkedReferenceChips = hasLinkedReferences ? (
+    const linkedReferenceChips = !isVSCode && hasLinkedReferences ? (
         <div className="flex flex-wrap items-center gap-2 pt-2">
             {linkedIssue && !isVSCode ? (
                 <LinkedReferenceRow
@@ -3736,9 +3824,16 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                             showBranchSelector={shouldShowDraftBranchSelector}
                             onProjectChange={handleDraftProjectChange}
                             onDirectoryChange={handleDraftDirectoryChange}
+                            onCreateSpace={handleCreateSpace}
                             theme={currentTheme}
                         />
                     </div>
+                ) : null}
+                {showDraftTargetSelectors && messageWaitsForSpace ? (
+                    <p className="mb-1.5 flex items-center gap-1.5 px-0.5 typography-meta text-muted-foreground" role="status">
+                        <Icon name="time" className="size-3.5 shrink-0" />
+                        {t('spaces.draft.queued')}
+                    </p>
                 ) : null}
                 {isMobile && showDraftTargetSelectors && selectedDraftProject ? (
                     <MobileDraftTargetTriggers
@@ -3830,12 +3925,23 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         onAgentSelect={handleAgentSelect}
                         onClose={closeAutocomplete}
                     />
+                {/* The lift shadow lives on this wrapper, away from the glass
+                    box's backdrop-filter: on the same element Chromium grows
+                    the glass layer by the shadow's blur, and that band painted
+                    a flat grey strip over the bottom of the goal row above. */}
+                <div
+                    className={cn(
+                        'flex flex-col',
+                        isComposerExpanded && 'flex-1 min-h-0',
+                        'shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]',
+                    )}
+                    style={{ borderRadius: chatInputRadius }}
+                >
                 <div
                     className={cn(
                         "flex flex-col relative overflow-visible",
                         isComposerExpanded && 'flex-1 min-h-0',
                         "border border-border/80 focus-within:border-interactive-selection-foreground/35",
-                        "shadow-[0_4px_16px_-4px_rgb(0_0_0_/_0.12)]",
                         // The box floats over the transcript, so it is glass.
                         'oc-glass-composer',
                         isDragging && "ring-2 ring-primary ring-offset-2"
@@ -3876,6 +3982,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         text area + footer exactly. */}
                     <div className={cn('relative flex flex-col', isComposerExpanded && 'flex-1 min-h-0')}>
                     <div className={cn("overflow-hidden", isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}>
+                        {parallel.isActive ? <ParallelComposerStrip parallel={parallel} project={parallelProjectRef} /> : null}
                         {composerTopRows}
                         {isMobile && isBtwActive ? (
                             <div className="scrollbar-none relative z-10 flex items-center gap-x-2 overflow-x-auto px-3 pb-0.5 pt-1.5">
@@ -4004,10 +4111,17 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         isBtw={isBtwActive}
                         modelSessionId={btwComposerSessionId}
                         btwSelection={effectiveBtwSelection}
+                        onRunInParallel={!isMobile && !isBtwActive ? handleRunInParallel : undefined}
+                        parallelRun={parallel.isActive ? {
+                            runCount: parallel.runCount,
+                            launching: parallel.isLaunching,
+                            onLaunch: () => { void parallel.launch(); },
+                        } : null}
                     />
                     {mobileModelAgentRow}
                     </div>
 
+                </div>
                 </div>
                 </div>
                 </>
@@ -4239,10 +4353,14 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 showBranchSelector={shouldShowDraftBranchSelector}
                 onProjectChange={handleDraftProjectChange}
                 onDirectoryChange={handleDraftDirectoryChange}
+                onCreateSpace={handleCreateSpace}
                 theme={currentTheme}
                 openPicker={mobileDraftPicker}
                 onOpenPickerChange={setMobileDraftPicker}
             />
+        ) : null}
+        {newSpaceProject ? (
+            <NewSpaceDialog open onOpenChange={(open) => { if (!open) setNewSpaceProject(null); }} project={newSpaceProject} />
         ) : null}
         </>
     );

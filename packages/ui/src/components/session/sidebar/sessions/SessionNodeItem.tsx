@@ -62,8 +62,7 @@ import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
 import { getMultiRunIdentity, sameMultiRunIdentity } from '@/lib/multirun/identity';
-import { MultiRunFusionDialog } from '@/components/multirun/MultiRunFusionDialog';
-import { FusionIcon } from '@/components/icons/FusionIcon';
+import { ArrowsMerge } from '@/components/icons/ArrowsMerge';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
 import {
   buildSessionTreeMoveMessages,
@@ -581,8 +580,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     },
   });
   const isSessionMenuOpen = isMenuOpen || isContextMenuOpen;
-  const isMultiRunLikeSession = React.useMemo(() => getMultiRunIdentity(resolvedSession) !== null, [resolvedSession]);
-  const [fusionDialogOpen, setFusionDialogOpen] = React.useState(false);
+  const multiRunKey = React.useMemo(() => getMultiRunIdentity(resolvedSession)?.key ?? null, [resolvedSession]);
 
   const descendantCount = React.useMemo(() => collectNodeDescendantIds(node).length, [collectNodeDescendantIds, node]);
 
@@ -817,6 +815,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
               </span>
             ) : null}
             zombieIndicator={null}
+            goal={sessionGoalGlyph}
             badges={null}
             hideMetaOnHoverClass=""
           />
@@ -1261,10 +1260,10 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           </Sub>
         );
       })() : null}
-      {isMultiRunLikeSession ? (
-        <Item onClick={() => setFusionDialogOpen(true)} className="[&>svg]:mr-1">
-          <FusionIcon className="mr-1 h-4 w-4" />
-          {t('sessions.sidebar.session.menu.runFusion')}
+      {multiRunKey ? (
+        <Item onClick={() => useUIStore.getState().setRunOverviewKey(multiRunKey)} className="[&>svg]:mr-1">
+          <ArrowsMerge className="mr-1 h-4 w-4" />
+          {t('sessions.sidebar.session.menu.openRunOverview')}
         </Item>
       ) : null}
 
@@ -1423,9 +1422,11 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       <Icon name="check" className="h-3.5 w-3.5" />
     </span>
   ) : null);
-  const rowBadges = (pendingPermissionCount > 0 || pendingFormCount > 0 || showDoneHint) ? (
+  // Timeline rows carry the done hint in their first line instead.
+  const badgeDoneHint = !isTimelineRow && showDoneHint;
+  const rowBadges = (pendingPermissionCount > 0 || pendingFormCount > 0 || badgeDoneHint) ? (
     <>
-      {doneHintBadge()}
+      {badgeDoneHint ? doneHintBadge() : null}
       {pendingPermissionCount > 0 ? (
         <span className="inline-flex flex-shrink-0 items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive" title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
           <Icon name="shield" className="h-3 w-3" />
@@ -1489,7 +1490,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       directoryIndicator={!archivedBucket && sessionDirectory ? <DirectoryActionIndicator directory={sessionDirectory} /> : null}
       prBadge={timelinePrBadge}
       zombieIndicator={streamingIndicator}
+      goal={sessionGoalGlyph}
       badges={rowBadges}
+      doneHint={doneHintBadge()}
       providerId={resolvedSession.model?.providerID ?? null}
       metaPaddingClass={alwaysShowActions
         ? (showQuickArchiveAction ? 'pr-13' : 'pr-7')
@@ -1649,6 +1652,9 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                               : 'group-hover:mr-1 group-has-[:focus-visible]:mr-1'}
                         />
                       ) : null}
+                      {/* The done hint leads the date/branch cluster, the
+                          way the Timeline row puts it before the time. */}
+                      {doneHintBadge(cn(badgeVisibilityClass, alwaysShowActions ? 'ml-2' : 'ml-1'))}
                       {/* While a turn runs (and until its result is read) the
                           elapsed counter takes over this slot from the usual
                           goal/branch/date metadata, which stays one hover or
@@ -1656,7 +1662,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                       {alwaysShowActions ? (
                         // Touch runtimes have no hover tooltip, so the compact
                         // date stays inline there.
-                        <span className="ml-2 inline-flex flex-shrink-0 items-center gap-1 typography-micro text-muted-foreground/75">
+                        <span className={cn('inline-flex flex-shrink-0 items-center gap-1 typography-micro text-muted-foreground/75', !showDoneHint && 'ml-2')}>
                           {showActivityDuration ? (
                             <SessionActivityDuration sessionId={session.id} running={isStreaming} />
                           ) : (
@@ -1675,7 +1681,8 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                         </span>
                       ) : (showActivityDuration || sessionGoalGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
                         <div className={cn(
-                            'relative ml-1 flex h-4 flex-shrink-0 items-center justify-end',
+                            'relative flex h-4 flex-shrink-0 items-center justify-end',
+                            !showDoneHint && 'ml-1',
                             isSessionMenuOpen
                               ? 'hidden'
                               : isVSCode
@@ -1716,7 +1723,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                           </span>
                         </div>
                       ) : null}
-                      {doneHintBadge(badgeVisibilityClass)}
                       {pendingPermissionCount > 0 ? (
                         <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
                           <Icon name="shield" className="h-3 w-3" />
@@ -1922,13 +1928,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {isMultiRunLikeSession ? (
-        <MultiRunFusionDialog
-          session={resolvedSession}
-          open={fusionDialogOpen}
-          onOpenChange={setFusionDialogOpen}
-        />
-      ) : null}
     </React.Fragment>
   );
 }
